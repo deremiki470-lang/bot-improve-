@@ -1,31 +1,46 @@
-import hashlib
 import time
-import os
+import multiprocessing as mp
+import numpy as np
 
-def cpu_benchmark(duration_sec=10, block_size=32):
-    """
-    Simple CPU benchmark to simulate hashing load.
-    duration_sec: how long to run test (seconds)
-    block_size: bytes per hash input (affects CPU workload)
-    """
-    data = os.urandom(block_size)
-    count = 0
-    start = time.time()
-    end_time = start + duration_sec
+PROG_LEN = 512        # instructions per program
+TEST_ITERS = 100_000  # programs per process (tune this for speed/accuracy)
 
-    while time.time() < end_time:
-        # Simulate a hash calculation (like mining)
-        data = hashlib.sha256(data).digest()
-        count += 1
+# Fast xorshift64 PRNG
+def xorshift64(state):
+    x = state[0]
+    x ^= (x << 13) & 0xFFFFFFFFFFFFFFFF
+    x ^= (x >> 7) & 0xFFFFFFFFFFFFFFFF
+    x ^= (x << 17) & 0xFFFFFFFFFFFFFFFF
+    state[0] = x & 0xFFFFFFFFFFFFFFFF
+    return state[0]
 
-    elapsed = time.time() - start
-    hashes_per_sec = count / elapsed
+def gen_program(state):
+    opcodes = np.empty(PROG_LEN, dtype=np.uint8)
+    operands = np.empty(PROG_LEN, dtype=np.uint64)
+    for i in range(PROG_LEN):
+        r = xorshift64(state)
+        opcodes[i]  = r & 0xFF
+        operands[i] = (r >> 8) & 0xFFFFFFFFFFFF
+    return opcodes, operands
 
-    print(f"--- CPU Benchmark Results ---")
-    print(f"Duration: {elapsed:.2f} s")
-    print(f"Hashes computed: {count:,}")
-    print(f"Estimated speed: {hashes_per_sec:,.0f} hashes/sec")
-    print(f"Equivalent: {hashes_per_sec/1e3:,.2f} kH/s, {hashes_per_sec/1e6:,.2f} MH/s")
+def worker(seed):
+    state = [seed ^ 0x123456789ABCDEF0]
+    t0 = time.perf_counter()
+    for _ in range(TEST_ITERS):
+        gen_program(state)
+    t1 = time.perf_counter()
+    return TEST_ITERS / (t1 - t0)
+
+def main():
+    cores = mp.cpu_count()
+    print(f"Detected {cores} logical cores — launching benchmark...")
+    with mp.Pool(cores) as pool:
+        results = pool.map(worker, [i * 0xABCDEF for i in range(cores)])
+
+    total = sum(results)
+    per_core = [round(r, 1) for r in results]
+    print(f"\nPer-core programs/sec: {per_core}")
+    print(f"Total: {total:,.2f} programs/sec across {cores} cores")
 
 if __name__ == "__main__":
-    cpu_benchmark(duration_sec=10)
+    main()
